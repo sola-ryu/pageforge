@@ -1,0 +1,36 @@
+{{define "site"}}
+<!doctype html>
+<html lang="en">
+{{template "head" .}}
+<body>
+{{template "nav" .}}
+<p><a href="/sites">← Sites</a></p>
+<h1><code>{{.Site.Owner}}/{{.Site.Repo}}</code></h1>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+<p>Published at <a href="{{.SiteURL}}"><span class="site-url">{{.SiteURL}}</span></a></p>
+<form method="post" action="/sites/{{.Site.Owner}}/{{.Site.Repo}}">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <label for="branch">Branch</label>
+  <select id="branch" name="branch">
+    {{range .Branches}}
+      <option value="{{.}}" {{if eq . $.Site.Branch}}selected{{end}}>{{.}}</option>
+    {{end}}
+  </select>
+  <label for="subdir">Subdirectory <span class="hint">(optional, e.g. <code>docs</code> or <code>public</code>)</span></label>
+  <input type="text" id="subdir" name="subdir" value="{{.Site.Subdir}}" placeholder="(repository root)">
+  <div class="checkbox-row">
+    <input type="checkbox" id="spa_fallback" name="spa_fallback" {{if .Site.SPAFallback}}checked{{end}}>
+    <label for="spa_fallback">SPA fallback <span class="hint">— serve <code>index.html</code> for unknown paths</span></label>
+  </div>
+  <div class="actions">
+    <button class="primary" type="submit">Save</button>
+  </div>
+</form>
+<form method="post" action="/sites/unpublish" onsubmit="return confirm('Unpublish this site?');">
+  <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+  <input type="hidden" name="site_id" value="{{.Site.ID}}">
+  <div class="actions"><button class="danger" type="submit">Unpublish</button></div>
+</form>
+</body>
+</html>
+{{end}}

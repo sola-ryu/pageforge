@@ -1,0 +1,45 @@
+{{define "sites"}}
+<!doctype html>
+<html lang="en">
+{{template "head" .}}
+<body>
+{{template "nav" .}}
+<h1>Sites</h1>
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+{{if .Repos}}
+<table>
+  <thead><tr><th>Repository</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+  {{range .Repos}}
+    <tr>
+      <td><code>{{.FullName}}</code> {{if .Private}}<span class="badge private">private</span>{{end}}</td>
+      <td>
+        {{if .Site}}
+          <span class="badge live">published</span>
+          <span class="hint">{{.Site.Branch}}{{if .Site.Subdir}}/{{.Site.Subdir}}{{end}}</span>
+        {{else}}
+          <span class="hint">—</span>
+        {{end}}
+      </td>
+      <td>
+        {{if .Site}}
+          <a class="btn" href="/sites/{{.Owner}}/{{.Name}}">Settings</a>
+        {{else}}
+          <form class="inline" method="post" action="/sites/publish">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="hidden" name="owner" value="{{.Owner}}">
+            <input type="hidden" name="repo" value="{{.Name}}">
+            <button type="submit">Publish</button>
+          </form>
+        {{end}}
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="hint">No repositories found on your Forgejo account.</p>
+{{end}}
+</body>
+</html>
+{{end}}

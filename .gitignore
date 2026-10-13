@@ -1,0 +1,4 @@
+pageforge
+*.db
+*.db-wal
+*.db-shm

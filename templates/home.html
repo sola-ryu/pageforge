@@ -1,0 +1,14 @@
+{{define "home"}}
+<!doctype html>
+<html lang="en">
+{{template "head" .}}
+<body>
+{{template "nav" .}}
+<h1>Static sites from your Forgejo repos</h1>
+<p>pageforge publishes repositories as static websites, straight from a branch — no build step, no deploy pipeline. Pick a repo, pick a branch and an optional subdirectory, and it's live.</p>
+<p>Sites are served at <code>{{.PublicURL}}/:owner/:repo/</code>, always from the latest commit on the configured branch.</p>
+<p><a class="btn primary" href="/login">Log in with Forgejo</a></p>
+<p class="hint">pageforge connects to <code>{{.ForgejoURL}}</code> via OAuth. It only requests read access to your profile and repositories.</p>
+</body>
+</html>
+{{end}}
