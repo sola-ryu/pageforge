@@ -1,20 +1,25 @@
 # pageforge
 
-Static site hosting for [Forgejo](https://forgejo.org) repositories — a
-GitHub Pages-style server with per-repo settings and OAuth login.
+Static site hosting for [Forgejo](https://forgejo.org) and
+[Gitea](https://gitea.io) repositories — a GitHub Pages-style server with
+per-repo settings and OAuth login. The API surface pageforge uses (OAuth2,
+`/api/v1/user`, repository listing, branches, contents) is identical on
+both, so it works against either one.
 
-Users log in with their Forgejo account, pick which repositories to publish,
-and choose a branch and optional subdirectory per repo. pageforge serves the
-latest files from those branches through the Forgejo API. No build step, no
-deploy pipeline, no webhook: a push to the branch is live within seconds.
+Users log in with their Forgejo/Gitea account, pick which repositories to
+publish, and choose a branch and optional subdirectory per repo. pageforge
+serves the latest files from those branches through the API. No build step,
+no deploy pipeline, no webhook: a push to the branch is live within
+seconds.
 
 Published sites live at `https://pages.example.com/:owner/:repo/`.
 
 ## How it works
 
 - **OAuth login.** pageforge registers as an OAuth2 application on your
-  Forgejo instance and requests `read:user` + `read:repository`. Access
-  tokens are encrypted at rest (AES-256-GCM) and refreshed automatically.
+  Forgejo/Gitea instance and requests `read:user` + `read:repository`.
+  Access tokens are encrypted at rest (AES-256-GCM) and refreshed
+  automatically.
 - **Per-repo settings.** Branch (defaults to the repo's default branch),
   subdirectory (e.g. `docs` or `public`), and an optional SPA fallback that
   serves `index.html` for unknown paths.
@@ -27,7 +32,7 @@ Published sites live at `https://pages.example.com/:owner/:repo/`.
 
 ## Quick start
 
-1. **Register an OAuth2 application** on your Forgejo instance under
+1. **Register an OAuth2 application** on your Forgejo/Gitea instance under
    *Settings → Applications → Manage OAuth2 Applications*:
    - Application name: `pageforge` (anything works)
    - Redirect URI: `https://pages.example.com/oauth/callback`
@@ -63,8 +68,8 @@ services:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `PAGEFORGE_FORGEJO_URL` | yes | — | Public Forgejo URL (browser-facing OAuth) |
-| `PAGEFORGE_FORGEJO_INTERNAL_URL` | no | `PAGEFORGE_FORGEJO_URL` | Forgejo URL for server-side API calls |
+| `PAGEFORGE_FORGEJO_URL` | yes | — | Public Forgejo/Gitea URL (browser-facing OAuth) |
+| `PAGEFORGE_FORGEJO_INTERNAL_URL` | no | `PAGEFORGE_FORGEJO_URL` | Forgejo/Gitea URL for server-side API calls |
 | `PAGEFORGE_PUBLIC_URL` | yes | — | This app's public URL |
 | `PAGEFORGE_CLIENT_ID` | yes | — | OAuth2 client ID |
 | `PAGEFORGE_CLIENT_SECRET` | yes | — | OAuth2 client secret |
