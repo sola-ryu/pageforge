@@ -3,8 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -56,14 +54,6 @@ func newPageCache() *pageCache {
 		heads: make(map[int64]headEntry),
 		files: make(map[string]fileEntry),
 	}
-}
-
-// contentsFile is the Forgejo contents API response for a single file.
-type contentsFile struct {
-	Type     string `json:"type"`
-	Encoding string `json:"encoding"`
-	Content  string `json:"content"`
-	SHA      string `json:"sha"`
 }
 
 var contentTypes = map[string]string{
@@ -130,8 +120,13 @@ func (a *App) branchHead(ctx context.Context, user *User, site *Site) (string, e
 }
 
 // fetchFile reads one file from the repo at the given branch HEAD.
-// apiPath is the repo-relative path (no leading slash). Returns found=false
-// when the path is not a file.
+// apiPath is the repo-relative path (no leading slash).
+//
+// Files are fetched via the /media/ API endpoint, which serves raw bytes
+// and resolves Git LFS pointers server-side (the /contents/ endpoint would
+// only return the pointer file text). Directories 404, which the caller
+// uses to fall through to index.html probing. Returns found=false when the
+// path does not exist.
 func (a *App) fetchFile(ctx context.Context, user *User, site *Site, headSHA, apiPath string) (data []byte, contentType string, found bool, err error) {
 	key := fmt.Sprintf("%d|%s|%s", site.ID, headSHA, apiPath)
 	a.pageCache.mu.Lock()
@@ -146,45 +141,27 @@ func (a *App) fetchFile(ctx context.Context, user *User, site *Site, headSHA, ap
 	for i, s := range segs {
 		segs[i] = url.PathEscape(s)
 	}
-	var raw json.RawMessage
-	err = a.apiGet(ctx, user, "/repos/"+url.PathEscape(site.Owner)+"/"+url.PathEscape(site.Repo)+
-		"/contents/"+strings.Join(segs, "/")+"?ref="+url.QueryEscape(site.Branch), &raw)
+	body, status, err := forgejoGetRaw(ctx, a.cfg.ForgejoInternalURL, user.AccessToken,
+		"/repos/"+url.PathEscape(site.Owner)+"/"+url.PathEscape(site.Repo)+
+			"/media/"+strings.Join(segs, "/")+"?ref="+url.QueryEscape(site.Branch))
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
-			return nil, "", false, nil
-		}
 		return nil, "", false, err
 	}
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, "", false, nil // a directory listing or something unexpected
-	}
-	var cf contentsFile
-	if err := json.Unmarshal(raw, &cf); err != nil {
-		return nil, "", false, err
-	}
-	if cf.Type != "file" {
+	if status == http.StatusNotFound {
 		return nil, "", false, nil
 	}
-	clean := strings.Map(func(r rune) rune {
-		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
-			return -1
-		}
-		return r
-	}, cf.Content)
-	data, err = base64.StdEncoding.DecodeString(clean)
-	if err != nil {
-		return nil, "", false, fmt.Errorf("decoding %s: %w", apiPath, err)
+	if status < 200 || status >= 300 {
+		return nil, "", false, fmt.Errorf("forgejo media %s: status %d", apiPath, status)
 	}
-	contentType = contentTypeFor(apiPath, data)
+	contentType = contentTypeFor(apiPath, body)
 
 	a.pageCache.mu.Lock()
 	if len(a.pageCache.files) >= maxCachedFiles {
 		a.pageCache.files = make(map[string]fileEntry, maxCachedFiles)
 	}
-	a.pageCache.files[key] = fileEntry{data: data, contentType: contentType, at: time.Now()}
+	a.pageCache.files[key] = fileEntry{data: body, contentType: contentType, at: time.Now()}
 	a.pageCache.mu.Unlock()
-	return data, contentType, true, nil
+	return body, contentType, true, nil
 }
 
 func (a *App) handlePage(w http.ResponseWriter, r *http.Request) {

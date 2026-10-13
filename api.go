@@ -54,6 +54,32 @@ func forgejoGet(ctx context.Context, base, accessToken, apiPath string, out any)
 	return json.Unmarshal(body, out)
 }
 
+// maxFileBytes caps a single served file at 64 MiB.
+const maxFileBytes = 64 << 20
+
+// forgejoGetRaw performs an authenticated GET against the Forgejo API
+// and returns the raw response body and status code.
+func forgejoGetRaw(ctx context.Context, base, accessToken, apiPath string) ([]byte, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1"+apiPath, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Authorization", "token "+accessToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFileBytes+1))
+	if err != nil {
+		return nil, 0, err
+	}
+	if int64(len(body)) > maxFileBytes {
+		return nil, 0, fmt.Errorf("file exceeds %d MiB limit", maxFileBytes>>20)
+	}
+	return body, resp.StatusCode, nil
+}
+
 // tokenResponse is the OAuth2 token endpoint response.
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`

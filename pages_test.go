@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,8 +11,12 @@ import (
 )
 
 // fakeForgejo serves the minimal API surface pageforge needs:
-// branch lookup and the contents API.
-func fakeForgejo(t *testing.T, files map[string]string) *httptest.Server {
+// branch lookup and the /media/ endpoint, which serves raw file bytes
+// and resolves Git LFS pointers server-side (like the real thing).
+//
+// files maps repo paths to the bytes stored in git (which may be an LFS
+// pointer document); lfs maps paths to the resolved LFS object bytes.
+func fakeForgejo(t *testing.T, files, lfs map[string]string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/repos/acme/blog/branches/main", func(w http.ResponseWriter, r *http.Request) {
@@ -23,8 +26,8 @@ func fakeForgejo(t *testing.T, files map[string]string) *httptest.Server {
 			"commit": map[string]string{"id": "abc123"},
 		})
 	})
-	mux.HandleFunc("/api/v1/repos/acme/blog/contents/", func(w http.ResponseWriter, r *http.Request) {
-		p := strings.TrimPrefix(r.URL.EscapedPath(), "/api/v1/repos/acme/blog/contents/")
+	mux.HandleFunc("/api/v1/repos/acme/blog/media/", func(w http.ResponseWriter, r *http.Request) {
+		p := strings.TrimPrefix(r.URL.EscapedPath(), "/api/v1/repos/acme/blog/media/")
 		var segs []string
 		for _, s := range strings.Split(p, "/") {
 			u, err := url.PathUnescape(s)
@@ -37,16 +40,18 @@ func fakeForgejo(t *testing.T, files map[string]string) *httptest.Server {
 		body, ok := files[rel]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]string{"message": "not found"})
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"type":     "file",
-			"encoding": "base64",
-			"content":  base64.StdEncoding.EncodeToString([]byte(body)),
-			"sha":      "sha-of-" + rel,
-		})
+		// Like Forgejo's GetRawFileOrLFS: resolve LFS pointers to the object.
+		if strings.HasPrefix(body, "version https://git-lfs.github.com/spec/v1\n") {
+			resolved, ok := lfs[rel]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			body = resolved
+		}
+		w.Write([]byte(body))
 	})
 	return httptest.NewServer(mux)
 }
@@ -96,7 +101,7 @@ func get(t *testing.T, app *App, target string) *httptest.ResponseRecorder {
 }
 
 func TestServeRootIndex(t *testing.T) {
-	srv := fakeForgejo(t, map[string]string{"index.html": "<h1>root</h1>"})
+	srv := fakeForgejo(t, map[string]string{"index.html": "<h1>root</h1>"}, nil)
 	defer srv.Close()
 	app := testApp(t, srv.URL)
 	publish(t, app, "acme", "blog", "main", "", false)
@@ -118,7 +123,7 @@ func TestServeSubdir(t *testing.T) {
 		"index.html":      "<h1>root</h1>",
 		"docs/index.html": "<h1>docs</h1>",
 		"docs/a.css":      "x{}",
-	})
+	}, nil)
 	defer srv.Close()
 	app := testApp(t, srv.URL)
 	publish(t, app, "acme", "blog", "main", "docs", false)
@@ -137,7 +142,7 @@ func TestServeSubdir(t *testing.T) {
 }
 
 func TestNotFound(t *testing.T) {
-	srv := fakeForgejo(t, map[string]string{"index.html": "<h1>root</h1>"})
+	srv := fakeForgejo(t, map[string]string{"index.html": "<h1>root</h1>"}, nil)
 	defer srv.Close()
 	app := testApp(t, srv.URL)
 	publish(t, app, "acme", "blog", "main", "", false)
@@ -151,7 +156,7 @@ func TestNotFound(t *testing.T) {
 }
 
 func TestPathTraversalRejected(t *testing.T) {
-	srv := fakeForgejo(t, map[string]string{"index.html": "<h1>root</h1>"})
+	srv := fakeForgejo(t, map[string]string{"index.html": "<h1>root</h1>"}, nil)
 	defer srv.Close()
 	app := testApp(t, srv.URL)
 	publish(t, app, "acme", "blog", "main", "docs", false)
@@ -168,7 +173,7 @@ func TestPathTraversalRejected(t *testing.T) {
 }
 
 func TestSPAFallback(t *testing.T) {
-	srv := fakeForgejo(t, map[string]string{"index.html": "<h1>spa</h1>"})
+	srv := fakeForgejo(t, map[string]string{"index.html": "<h1>spa</h1>"}, nil)
 	defer srv.Close()
 	app := testApp(t, srv.URL)
 	publish(t, app, "acme", "blog", "main", "", true)
@@ -176,6 +181,41 @@ func TestSPAFallback(t *testing.T) {
 	rec := get(t, app, "https://pages.example.com/acme/blog/some/client/route")
 	if rec.Code != 200 || rec.Body.String() != "<h1>spa</h1>" {
 		t.Fatalf("spa fallback: got %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServeLFSFile(t *testing.T) {
+	pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:4d7a5f8c3e2a1b9d6f4e8c2a5b7d9e1f3a5b7d9e1f3a5b7d9e1f3a5b7d9e1f3a5\nsize 8\n"
+	srv := fakeForgejo(t,
+		map[string]string{
+			"index.html":       "<h1>root</h1>",
+			"assets/logo.png":  pointer,
+			"assets/plain.txt": "just text",
+		},
+		map[string]string{
+			"assets/logo.png": "PNGDATA!",
+		})
+	defer srv.Close()
+	app := testApp(t, srv.URL)
+	publish(t, app, "acme", "blog", "main", "", false)
+
+	// The LFS pointer must be resolved to the real object bytes,
+	// not served as the pointer document.
+	rec := get(t, app, "https://pages.example.com/acme/blog/assets/logo.png")
+	if rec.Code != 200 {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); body != "PNGDATA!" {
+		t.Fatalf("LFS file served pointer instead of object: %q", body)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("unexpected content type %q", ct)
+	}
+
+	// Regular files still work.
+	rec = get(t, app, "https://pages.example.com/acme/blog/assets/plain.txt")
+	if rec.Code != 200 || rec.Body.String() != "just text" {
+		t.Fatalf("plain file: got %d %q", rec.Code, rec.Body.String())
 	}
 }
 

@@ -26,6 +26,9 @@ Published sites live at `https://pages.example.com/:owner/:repo/`.
 - **Freshness without webhooks.** File blobs are cached keyed by the branch
   HEAD commit SHA, which is re-checked every 15 seconds. A new push changes
   the HEAD and the cache naturally misses.
+- **Git LFS support.** Files are read through the API's `/media/` endpoint,
+  which resolves Git LFS pointers server-side — LFS-tracked assets (images,
+  videos, fonts) are served as their real bytes, not the pointer document.
 - **Two Forgejo URLs.** Browser-facing OAuth goes through the public URL;
   server-side API calls and the token exchange go through an internal
   docker-network URL, so API traffic never leaves your network.
@@ -82,9 +85,11 @@ services:
 - **Publishing a private repository makes its files public** to anyone who
   knows the site URL — pageforge serves through the publisher's token and
   does not gate readers. Only publish repos you're comfortable exposing.
+  (This includes Git LFS objects the token can read.)
 - OAuth tokens are encrypted at rest and never logged. Sessions are
   random 256-bit IDs in `HttpOnly`, `Secure`, `SameSite=Lax` cookies.
 - One repo can only be published by one user (enforced in the database).
+- Single files are capped at 64 MiB.
 
 ## Development
 
