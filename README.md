@@ -29,6 +29,10 @@ Published sites live at `https://pages.example.com/:owner/:repo/`.
 - **Git LFS support.** Files are read through the API's `/media/` endpoint,
   which resolves Git LFS pointers server-side — LFS-tracked assets (images,
   videos, fonts) are served as their real bytes, not the pointer document.
+- **Image optimization.** PNG/JPEG images are transcoded to WebP (pure-Go
+  encoder, no cgo) when the client sends `Accept: image/webp` and the
+  result is actually smaller — otherwise the original is served. Variants
+  are cached alongside the branch HEAD and served with `Vary: Accept`.
 - **Two Forgejo URLs.** Browser-facing OAuth goes through the public URL;
   server-side API calls and the token exchange go through an internal
   docker-network URL, so API traffic never leaves your network.
@@ -79,6 +83,11 @@ services:
 | `PAGEFORGE_SESSION_SECRET` | yes | — | Signs sessions; encrypts stored tokens |
 | `PAGEFORGE_ADDR` | no | `:8080` | Listen address |
 | `PAGEFORGE_DB` | no | `./pageforge.db` | SQLite database path |
+| `PAGEFORGE_WEBP_QUALITY` | no | `80` | WebP transcode quality (1-100) |
+
+Note: AVIF output isn't supported — encoding AVIF requires cgo
+(libAOM), which doesn't fit the static-binary container. All browsers
+that support AVIF also accept WebP, so they get the WebP variant.
 
 ## Security notes
 

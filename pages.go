@@ -44,15 +44,17 @@ type fileEntry struct {
 }
 
 type pageCache struct {
-	mu    sync.Mutex
-	heads map[int64]headEntry
-	files map[string]fileEntry
+	mu       sync.Mutex
+	heads    map[int64]headEntry
+	files    map[string]fileEntry
+	variants map[string]fileEntry // transcoded images, keyed site|head|path|format
 }
 
 func newPageCache() *pageCache {
 	return &pageCache{
-		heads: make(map[int64]headEntry),
-		files: make(map[string]fileEntry),
+		heads:    make(map[int64]headEntry),
+		files:    make(map[string]fileEntry),
+		variants: make(map[string]fileEntry),
 	}
 }
 
@@ -225,7 +227,7 @@ func (a *App) handlePage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if found {
-			serveFile(w, r, data, ct, path.Base(c))
+			a.servePageFile(w, r, site, head, c, data, ct)
 			return
 		}
 	}
@@ -234,12 +236,48 @@ func (a *App) handlePage(w http.ResponseWriter, r *http.Request) {
 	if site.SPAFallback {
 		idx := path.Join(strings.TrimPrefix(path.Join("/", site.Subdir), "/"), "index.html")
 		if data, ct, found, err := a.fetchFile(ctx, user, site, head, idx); err == nil && found {
-			serveFile(w, r, data, ct, "index.html")
+			a.servePageFile(w, r, site, head, idx, data, ct)
 			return
 		}
 	}
 
 	http.NotFound(w, r)
+}
+
+// servePageFile serves a fetched file, transcoding PNG/JPEG images to WebP
+// when the client accepts it and the result is smaller. The decision is
+// cached per (site, branch HEAD, path, format); a failed or useless
+// transcode caches the original so we don't retry it on every request.
+func (a *App) servePageFile(w http.ResponseWriter, r *http.Request, site *Site, headSHA, apiPath string, data []byte, contentType string) {
+	format := negotiatedFormat(r, contentType)
+	if format == "" {
+		serveFile(w, r, data, contentType, path.Base(apiPath))
+		return
+	}
+	// The representation depends on the Accept header: downstream caches
+	// must key on it.
+	w.Header().Set("Vary", "Accept")
+
+	key := fmt.Sprintf("%d|%s|%s|%s", site.ID, headSHA, apiPath, format)
+	a.pageCache.mu.Lock()
+	if e, ok := a.pageCache.variants[key]; ok {
+		a.pageCache.mu.Unlock()
+		serveFile(w, r, e.data, e.contentType, path.Base(apiPath))
+		return
+	}
+	a.pageCache.mu.Unlock()
+
+	out, outType := data, contentType
+	if webp, err := transcodeWebP(data, a.cfg.WebPQuality); err == nil && len(webp) < len(data) {
+		out, outType = webp, "image/webp"
+	}
+	a.pageCache.mu.Lock()
+	if len(a.pageCache.variants) >= maxCachedFiles {
+		a.pageCache.variants = make(map[string]fileEntry, maxCachedFiles)
+	}
+	a.pageCache.variants[key] = fileEntry{data: out, contentType: outType, at: time.Now()}
+	a.pageCache.mu.Unlock()
+	serveFile(w, r, out, outType, path.Base(apiPath))
 }
 
 func serveFile(w http.ResponseWriter, r *http.Request, data []byte, contentType, name string) {

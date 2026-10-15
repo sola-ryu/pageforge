@@ -3,6 +3,7 @@ module github.com/sola-ryu/pageforge
 go 1.26.0
 
 require (
+	github.com/SeriousBug/webp-go-pure v1.2.0
 	golang.org/x/oauth2 v0.37.0
 	modernc.org/sqlite v1.60.1
 )

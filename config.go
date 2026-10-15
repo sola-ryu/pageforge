@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -23,8 +24,10 @@ type Config struct {
 	ClientSecret string
 	// SessionSecret signs session cookies and encrypts stored OAuth tokens.
 	SessionSecret string
-	Addr          string
-	DBPath        string
+	// WebPQuality is the quality (1-100) used when transcoding images.
+	WebPQuality int
+	Addr        string
+	DBPath      string
 }
 
 func env(key, def string) string {
@@ -44,6 +47,7 @@ func loadConfig() (*Config, error) {
 		SessionSecret:      env("PAGEFORGE_SESSION_SECRET", ""),
 		Addr:               env("PAGEFORGE_ADDR", ":8080"),
 		DBPath:             env("PAGEFORGE_DB", "./pageforge.db"),
+		WebPQuality:        webpQuality(),
 	}
 	if cfg.ForgejoInternalURL == "" {
 		cfg.ForgejoInternalURL = cfg.ForgejoURL
@@ -64,6 +68,23 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
 	}
 	return cfg, nil
+}
+
+// webpQuality parses PAGEFORGE_WEBP_QUALITY (default 80, clamped to 1-100).
+func webpQuality() int {
+	q := 80
+	if v := env("PAGEFORGE_WEBP_QUALITY", ""); v != "" {
+		if f, err := strconv.Atoi(v); err == nil {
+			q = f
+		}
+	}
+	if q < 1 {
+		q = 1
+	}
+	if q > 100 {
+		q = 100
+	}
+	return q
 }
 
 // tokenKey derives the AES-256 key used to encrypt OAuth tokens at rest.
