@@ -80,6 +80,17 @@ func forgejoGetRaw(ctx context.Context, base, accessToken, apiPath string) ([]by
 	return body, resp.StatusCode, nil
 }
 
+// commitInfo is the subset of the git-commits API response we need.
+// (Both likely shapes are covered: nested committer date and top-level.)
+type commitInfo struct {
+	Created time.Time `json:"created"`
+	Commit  struct {
+		Committer struct {
+			Date time.Time `json:"date"`
+		} `json:"committer"`
+	} `json:"commit"`
+}
+
 // tokenResponse is the OAuth2 token endpoint response.
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`

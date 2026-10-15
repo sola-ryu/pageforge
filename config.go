@@ -26,6 +26,8 @@ type Config struct {
 	SessionSecret string
 	// WebPQuality is the quality (1-100) used when transcoding images.
 	WebPQuality int
+	// CacheMaxAge is the Cache-Control max-age in seconds for served files.
+	CacheMaxAge int
 	Addr        string
 	DBPath      string
 }
@@ -48,6 +50,7 @@ func loadConfig() (*Config, error) {
 		Addr:               env("PAGEFORGE_ADDR", ":8080"),
 		DBPath:             env("PAGEFORGE_DB", "./pageforge.db"),
 		WebPQuality:        webpQuality(),
+		CacheMaxAge:        cacheMaxAge(),
 	}
 	if cfg.ForgejoInternalURL == "" {
 		cfg.ForgejoInternalURL = cfg.ForgejoURL
@@ -85,6 +88,19 @@ func webpQuality() int {
 		q = 100
 	}
 	return q
+}
+
+// cacheMaxAge parses PAGEFORGE_CACHE_MAX_AGE in seconds (default 600).
+// This bounds how stale a browser's copy may be: a new push becomes
+// visible after at most this long (plus revalidation). Longer values cut
+// requests but delay updates; 0 means always revalidate.
+func cacheMaxAge() int {
+	if v := env("PAGEFORGE_CACHE_MAX_AGE", ""); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return 600
 }
 
 // tokenKey derives the AES-256 key used to encrypt OAuth tokens at rest.

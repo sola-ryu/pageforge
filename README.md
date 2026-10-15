@@ -33,6 +33,12 @@ Published sites live at `https://pages.example.com/:owner/:repo/`.
   encoder, no cgo) when the client sends `Accept: image/webp` and the
   result is actually smaller — otherwise the original is served. Variants
   are cached alongside the branch HEAD and served with `Vary: Accept`.
+- **Browser caching.** Served files carry `Cache-Control: public, max-age=N,
+  must-revalidate` (N adjustable, default 600 — the same as GitHub Pages),
+  an `ETag` derived from the branch HEAD commit SHA, and `Last-Modified`
+  from the HEAD commit date, so revalidation is a cheap 304. Note: a longer
+  max-age means pushes take longer to become visible; the ETag changes on
+  every push, so revalidation always catches up.
 - **Two Forgejo URLs.** Browser-facing OAuth goes through the public URL;
   server-side API calls and the token exchange go through an internal
   docker-network URL, so API traffic never leaves your network.
@@ -84,6 +90,7 @@ services:
 | `PAGEFORGE_ADDR` | no | `:8080` | Listen address |
 | `PAGEFORGE_DB` | no | `./pageforge.db` | SQLite database path |
 | `PAGEFORGE_WEBP_QUALITY` | no | `80` | WebP transcode quality (1-100) |
+| `PAGEFORGE_CACHE_MAX_AGE` | no | `600` | `Cache-Control` max-age in seconds for served files |
 
 Note: AVIF output isn't supported — encoding AVIF requires cgo
 (libAOM), which doesn't fit the static-binary container. All browsers

@@ -26,6 +26,15 @@ func fakeForgejo(t *testing.T, files, lfs map[string]string) *httptest.Server {
 			"commit": map[string]string{"id": "abc123"},
 		})
 	})
+	mux.HandleFunc("/api/v1/repos/acme/blog/git/commits/abc123", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"sha": "abc123",
+			"commit": map[string]any{
+				"committer": map[string]any{"date": "2026-10-14T12:00:00Z"},
+			},
+		})
+	})
 	mux.HandleFunc("/api/v1/repos/acme/blog/media/", func(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimPrefix(r.URL.EscapedPath(), "/api/v1/repos/acme/blog/media/")
 		var segs []string
@@ -63,6 +72,8 @@ func testApp(t *testing.T, forgejoURL string) *App {
 		ForgejoInternalURL: forgejoURL,
 		PublicURL:          "https://pages.example.com",
 		SessionSecret:      "test-secret-that-is-long-enough",
+		WebPQuality:        80,
+		CacheMaxAge:        600,
 	}
 	store, err := openStore(t.TempDir()+"/test.db", cfg.tokenKey())
 	if err != nil {
@@ -234,5 +245,68 @@ func TestCleanSubdir(t *testing.T) {
 		if got := cleanSubdir(in); got != want {
 			t.Errorf("cleanSubdir(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestCacheHeaders(t *testing.T) {
+	srv := fakeForgejo(t, map[string]string{"index.html": "<h1>root</h1>"}, nil)
+	defer srv.Close()
+	app := testApp(t, srv.URL)
+	publish(t, app, "acme", "blog", "main", "", false)
+
+	rec := getWithHeaders(t, app, "https://pages.example.com/acme/blog/", nil)
+	if rec.Code != 200 {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=600, must-revalidate" {
+		t.Fatalf("Cache-Control = %q", cc)
+	}
+	if etag := rec.Header().Get("ETag"); etag != `"abc123"` {
+		t.Fatalf("ETag = %q", etag)
+	}
+	// Last-Modified comes from the HEAD commit date served by the fake.
+	if lm := rec.Header().Get("Last-Modified"); lm != "Wed, 14 Oct 2026 12:00:00 GMT" {
+		t.Fatalf("Last-Modified = %q", lm)
+	}
+}
+
+func TestCacheHeadersWebPVariant(t *testing.T) {
+	original := noisePNG(t, 128, 128)
+	srv := fakeForgejo(t, map[string]string{"photo.png": string(original)}, nil)
+	defer srv.Close()
+	app := testApp(t, srv.URL)
+	publish(t, app, "acme", "blog", "main", "", false)
+
+	rec := getWithAccept(t, app, "https://pages.example.com/acme/blog/photo.png", "image/webp")
+	if rec.Code != 200 {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	if etag := rec.Header().Get("ETag"); etag != `"abc123-webp"` {
+		t.Fatalf("ETag = %q, want webp variant tag", etag)
+	}
+}
+
+func TestNotModified(t *testing.T) {
+	srv := fakeForgejo(t, map[string]string{"index.html": "<h1>root</h1>"}, nil)
+	defer srv.Close()
+	app := testApp(t, srv.URL)
+	publish(t, app, "acme", "blog", "main", "", false)
+
+	rec := getWithHeaders(t, app, "https://pages.example.com/acme/blog/", nil)
+	etag, lastMod := rec.Header().Get("ETag"), rec.Header().Get("Last-Modified")
+	if etag == "" || lastMod == "" {
+		t.Fatal("missing validators on first response")
+	}
+
+	rec2 := getWithHeaders(t, app, "https://pages.example.com/acme/blog/",
+		map[string]string{"If-None-Match": etag})
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("If-None-Match: got %d, want 304", rec2.Code)
+	}
+
+	rec3 := getWithHeaders(t, app, "https://pages.example.com/acme/blog/",
+		map[string]string{"If-Modified-Since": lastMod})
+	if rec3.Code != http.StatusNotModified {
+		t.Fatalf("If-Modified-Since: got %d, want 304", rec3.Code)
 	}
 }

@@ -34,11 +34,20 @@ func noisePNG(t *testing.T, w, h int) []byte {
 
 func getWithAccept(t *testing.T, app *App, target, accept string) *httptest.ResponseRecorder {
 	t.Helper()
+	headers := map[string]string{}
+	if accept != "" {
+		headers["Accept"] = accept
+	}
+	return getWithHeaders(t, app, target, headers)
+}
+
+func getWithHeaders(t *testing.T, app *App, target string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	req.SetPathValue("owner", "acme")
 	req.SetPathValue("repo", "blog")
-	if accept != "" {
-		req.Header.Set("Accept", accept)
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	rec := httptest.NewRecorder()
 	app.handlePage(rec, req)

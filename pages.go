@@ -33,8 +33,9 @@ const headTTL = 15 * time.Second
 const maxCachedFiles = 2048
 
 type headEntry struct {
-	sha string
-	at  time.Time
+	sha         string
+	committedAt time.Time // author date of the HEAD commit; drives Last-Modified
+	at          time.Time // when we checked
 }
 
 type fileEntry struct {
@@ -97,12 +98,13 @@ func contentTypeFor(name string, data []byte) string {
 	return http.DetectContentType(data)
 }
 
-// branchHead returns the HEAD commit SHA of the site's branch, cached briefly.
-func (a *App) branchHead(ctx context.Context, user *User, site *Site) (string, error) {
+// branchHead returns the HEAD commit of the site's branch, cached briefly.
+// The commit date is resolved too, so served files get a real Last-Modified.
+func (a *App) branchHead(ctx context.Context, user *User, site *Site) (headEntry, error) {
 	a.pageCache.mu.Lock()
 	if e, ok := a.pageCache.heads[site.ID]; ok && time.Since(e.at) < headTTL {
 		a.pageCache.mu.Unlock()
-		return e.sha, nil
+		return e, nil
 	}
 	a.pageCache.mu.Unlock()
 
@@ -110,15 +112,38 @@ func (a *App) branchHead(ctx context.Context, user *User, site *Site) (string, e
 	apiPath := "/repos/" + url.PathEscape(site.Owner) + "/" + url.PathEscape(site.Repo) +
 		"/branches/" + url.PathEscape(site.Branch)
 	if err := a.apiGet(ctx, user, apiPath, &br); err != nil {
-		return "", err
+		return headEntry{}, err
 	}
 	if br.Commit.ID == "" {
-		return "", fmt.Errorf("no commit for branch %s", site.Branch)
+		return headEntry{}, fmt.Errorf("no commit for branch %s", site.Branch)
+	}
+	entry := headEntry{
+		sha:         br.Commit.ID,
+		committedAt: a.commitDate(ctx, user, site, br.Commit.ID),
+		at:          time.Now(),
 	}
 	a.pageCache.mu.Lock()
-	a.pageCache.heads[site.ID] = headEntry{sha: br.Commit.ID, at: time.Now()}
+	a.pageCache.heads[site.ID] = entry
 	a.pageCache.mu.Unlock()
-	return br.Commit.ID, nil
+	return entry, nil
+}
+
+// commitDate resolves a commit SHA to its committer date. On any failure
+// it falls back to now — a missing date must not break serving.
+func (a *App) commitDate(ctx context.Context, user *User, site *Site, sha string) time.Time {
+	var ci commitInfo
+	err := a.apiGet(ctx, user, "/repos/"+url.PathEscape(site.Owner)+"/"+url.PathEscape(site.Repo)+
+		"/git/commits/"+url.PathEscape(sha), &ci)
+	if err != nil {
+		return time.Now()
+	}
+	if d := ci.Commit.Committer.Date; !d.IsZero() {
+		return d
+	}
+	if !ci.Created.IsZero() {
+		return ci.Created
+	}
+	return time.Now()
 }
 
 // fetchFile reads one file from the repo at the given branch HEAD.
@@ -221,7 +246,7 @@ func (a *App) handlePage(w http.ResponseWriter, r *http.Request) {
 		candidates = []string{apiPath, apiPath + "/index.html"}
 	}
 	for _, c := range candidates {
-		data, ct, found, err := a.fetchFile(ctx, user, site, head, c)
+		data, ct, found, err := a.fetchFile(ctx, user, site, head.sha, c)
 		if err != nil {
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
@@ -235,7 +260,7 @@ func (a *App) handlePage(w http.ResponseWriter, r *http.Request) {
 	// SPA fallback: serve the site root's index.html for unknown paths.
 	if site.SPAFallback {
 		idx := path.Join(strings.TrimPrefix(path.Join("/", site.Subdir), "/"), "index.html")
-		if data, ct, found, err := a.fetchFile(ctx, user, site, head, idx); err == nil && found {
+		if data, ct, found, err := a.fetchFile(ctx, user, site, head.sha, idx); err == nil && found {
 			a.servePageFile(w, r, site, head, idx, data, ct)
 			return
 		}
@@ -248,21 +273,21 @@ func (a *App) handlePage(w http.ResponseWriter, r *http.Request) {
 // when the client accepts it and the result is smaller. The decision is
 // cached per (site, branch HEAD, path, format); a failed or useless
 // transcode caches the original so we don't retry it on every request.
-func (a *App) servePageFile(w http.ResponseWriter, r *http.Request, site *Site, headSHA, apiPath string, data []byte, contentType string) {
+func (a *App) servePageFile(w http.ResponseWriter, r *http.Request, site *Site, head headEntry, apiPath string, data []byte, contentType string) {
 	format := negotiatedFormat(r, contentType)
 	if format == "" {
-		serveFile(w, r, data, contentType, path.Base(apiPath))
+		a.serveCached(w, r, head, "", data, contentType, path.Base(apiPath))
 		return
 	}
 	// The representation depends on the Accept header: downstream caches
 	// must key on it.
 	w.Header().Set("Vary", "Accept")
 
-	key := fmt.Sprintf("%d|%s|%s|%s", site.ID, headSHA, apiPath, format)
+	key := fmt.Sprintf("%d|%s|%s|%s", site.ID, head.sha, apiPath, format)
 	a.pageCache.mu.Lock()
 	if e, ok := a.pageCache.variants[key]; ok {
 		a.pageCache.mu.Unlock()
-		serveFile(w, r, e.data, e.contentType, path.Base(apiPath))
+		a.serveCached(w, r, head, format, e.data, e.contentType, path.Base(apiPath))
 		return
 	}
 	a.pageCache.mu.Unlock()
@@ -277,10 +302,21 @@ func (a *App) servePageFile(w http.ResponseWriter, r *http.Request, site *Site, 
 	}
 	a.pageCache.variants[key] = fileEntry{data: out, contentType: outType, at: time.Now()}
 	a.pageCache.mu.Unlock()
-	serveFile(w, r, out, outType, path.Base(apiPath))
+	a.serveCached(w, r, head, format, out, outType, path.Base(apiPath))
 }
 
-func serveFile(w http.ResponseWriter, r *http.Request, data []byte, contentType, name string) {
+// serveCached serves bytes with browser-cache headers: Cache-Control from
+// config, an ETag derived from the branch HEAD SHA (plus format for
+// variants), and Last-Modified from the HEAD commit date.
+// http.ServeContent turns If-None-Match / If-Modified-Since into 304s.
+func (a *App) serveCached(w http.ResponseWriter, r *http.Request, head headEntry, format string, data []byte, contentType, name string) {
+	etag := `"` + head.sha + `"`
+	if format != "" {
+		etag = `"` + head.sha + "-" + format + `"`
+	}
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Last-Modified", head.committedAt.UTC().Format(http.TimeFormat))
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, must-revalidate", a.cfg.CacheMaxAge))
 	w.Header().Set("Content-Type", contentType)
-	http.ServeContent(w, r, name, time.Now(), bytes.NewReader(data))
+	http.ServeContent(w, r, name, head.committedAt, bytes.NewReader(data))
 }
